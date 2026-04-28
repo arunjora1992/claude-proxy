@@ -401,11 +401,65 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .model-tag { display: inline-block; background: #1e3a5f; color: #60a5fa;
                border: 1px solid #1d4ed8; border-radius: 6px; padding: 2px 8px;
                font-size: 0.75rem; margin: 2px; }
+  /* Token-reduction banner */
+  .banner { display: flex; align-items: center; gap: 20px; padding: 20px 24px;
+            border-radius: 12px; margin-bottom: 16px; border: 1px solid #334155;
+            background: #1e293b; }
+  .banner .pill { font-size: 0.7rem; text-transform: uppercase; letter-spacing: .08em;
+                  padding: 4px 10px; border-radius: 999px; font-weight: 600; }
+  .banner .pill.ok       { background: #064e3b; color: #4ade80; border: 1px solid #047857; }
+  .banner .pill.warn     { background: #422006; color: #fbbf24; border: 1px solid #b45309; }
+  .banner .pill.bad      { background: #450a0a; color: #f87171; border: 1px solid #b91c1c; }
+  .banner .pill.idle     { background: #1e293b; color: #94a3b8; border: 1px solid #475569; }
+  .banner .headline { font-size: 1.1rem; font-weight: 600; color: #f8fafc; }
+  .banner .detail { font-size: 0.85rem; color: #94a3b8; margin-top: 2px; }
+  .banner .stat { margin-left: auto; text-align: right; }
+  .banner .stat .big { font-size: 2rem; font-weight: 700; color: #4ade80; line-height: 1; }
+  .banner .stat .big.zero { color: #94a3b8; }
+  .banner .stat .small { font-size: 0.78rem; color: #94a3b8; margin-top: 4px; }
+  .compare { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
+             background: #0f172a; border-radius: 8px; padding: 14px;
+             margin-top: 12px; border: 1px solid #1e293b; }
+  .compare .col { text-align: center; }
+  .compare .col .lbl { font-size: 0.7rem; text-transform: uppercase;
+                       letter-spacing: .05em; color: #64748b; margin-bottom: 4px; }
+  .compare .col .v   { font-size: 1.2rem; font-weight: 700; color: #e2e8f0; }
+  .compare .col.baseline .v { color: #f87171; }
+  .compare .col.billed   .v { color: #60a5fa; }
+  .compare .col.saved    .v { color: #4ade80; }
 </style>
 </head>
 <body>
 <h1>Claude Proxy Dashboard</h1>
 <p class="subtitle">Live token savings · auto-refreshes every 10 s</p>
+
+<!-- Token reduction banner — answers: is the proxy actually saving tokens? -->
+<div class="banner" id="banner">
+  <div>
+    <span class="pill idle" id="b_pill">awaiting data</span>
+    <div class="headline" id="b_headline" style="margin-top:8px">Send some traffic through the proxy to see savings</div>
+    <div class="detail" id="b_detail">No requests have been processed yet.</div>
+  </div>
+  <div class="stat">
+    <div class="big zero" id="b_pct">0%</div>
+    <div class="small" id="b_abs">0 tokens saved</div>
+  </div>
+</div>
+<div class="compare">
+  <div class="col baseline">
+    <div class="lbl">Baseline (no proxy)</div>
+    <div class="v" id="cmp_baseline">—</div>
+  </div>
+  <div class="col billed">
+    <div class="lbl">Billed-equivalent</div>
+    <div class="v" id="cmp_billed">—</div>
+  </div>
+  <div class="col saved">
+    <div class="lbl">Reduced by</div>
+    <div class="v" id="cmp_saved">—</div>
+  </div>
+</div>
+<div style="height:16px"></div>
 
 <!-- Top KPI cards -->
 <div class="grid">
@@ -584,8 +638,43 @@ async function refresh() {
   try {
     const r = await fetch('/proxy/stats');
     const d = await r.json();
-    const p = d.proxy, c = d.response_cache, cfg = d.config;
+    const p = d.proxy, c = d.response_cache, cfg = d.config, sv = d.savings || {};
     _cfg = cfg;
+
+    // Token-reduction banner
+    const pill = document.getElementById('b_pill');
+    const headline = document.getElementById('b_headline');
+    const detail = document.getElementById('b_detail');
+    const bigPct = document.getElementById('b_pct');
+    const bigAbs = document.getElementById('b_abs');
+    pill.className = 'pill';
+    bigPct.classList.remove('zero');
+    if (sv.status === 'reducing') {
+      pill.classList.add('ok'); pill.textContent = '✓ reducing tokens';
+      headline.textContent = 'Proxy is reducing your token usage';
+      detail.textContent = `Effective billed input is ${sv.reduction_pct}% lower than without the proxy.`;
+    } else if (sv.status === 'minimal_reduction') {
+      pill.classList.add('warn'); pill.textContent = 'minimal reduction';
+      headline.textContent = 'Proxy active but savings are small so far';
+      detail.textContent = 'Most savings come from prompt caching on repeated prefixes — they grow with traffic.';
+    } else if (sv.status === 'no_reduction') {
+      pill.classList.add('bad'); pill.textContent = 'no reduction';
+      headline.textContent = 'No measurable token reduction';
+      detail.textContent = 'Check that prompt caching is enabled and your traffic has stable prefixes.';
+      bigPct.classList.add('zero');
+    } else {
+      pill.classList.add('idle'); pill.textContent = 'awaiting data';
+      headline.textContent = 'Send traffic through the proxy to see savings';
+      detail.textContent = 'No upstream requests yet — point a client at this proxy.';
+      bigPct.classList.add('zero');
+    }
+    bigPct.textContent = (sv.reduction_pct || 0).toFixed(1) + '%';
+    bigAbs.textContent = fmt(sv.tokens_saved || 0) + ' input tokens saved';
+
+    // Comparison
+    document.getElementById('cmp_baseline').textContent = fmt(sv.baseline_input_tokens || 0);
+    document.getElementById('cmp_billed').textContent   = fmt(sv.billed_input_tokens   || 0);
+    document.getElementById('cmp_saved').textContent    = fmt(sv.tokens_saved          || 0);
 
     // Cost
     const saved = (p.cost_without_proxy_usd||0) - (p.cost_with_proxy_usd||0);
@@ -661,11 +750,58 @@ async def dashboard() -> HTMLResponse:
 
 # ── Admin / observability endpoints ───────────────────────────────────────
 
+def _compute_savings() -> dict:
+    """
+    Quantify whether the proxy is actually reducing token usage.
+
+    Definitions:
+      baseline_input_tokens = what the API would have billed at 1× without prompt caching
+                              (= fresh input + cache reads + cache writes, all at 1×)
+      billed_input_tokens   = effective billed-equivalent input tokens after prompt caching
+                              (cache reads count as 0.1×, cache writes as 1.25×)
+      Plus response-cache hits avoid the request entirely; we estimate the avoided
+      input tokens via the cached response's recorded input_tokens (tokens_saved_estimate).
+    """
+    inp     = _stats["input_tokens_total"]
+    cr      = _stats["input_tokens_cache_read"]
+    cw      = _stats["input_tokens_cache_written"]
+    cache_avoided = _stats["tokens_saved_estimate"]
+
+    baseline_input = inp + cr + cw + cache_avoided
+    billed_input   = inp + (cr * 0.1) + (cw * 1.25)  # cache_avoided saves 100%
+    tokens_saved   = max(0.0, baseline_input - billed_input)
+    reduction_pct  = (tokens_saved / baseline_input * 100) if baseline_input > 0 else 0.0
+
+    if baseline_input == 0:
+        status = "no_data"
+    elif tokens_saved <= 0:
+        status = "no_reduction"
+    elif reduction_pct >= 20:
+        status = "reducing"
+    else:
+        status = "minimal_reduction"
+
+    return {
+        "status": status,
+        "baseline_input_tokens": int(baseline_input),
+        "billed_input_tokens": int(billed_input),
+        "tokens_saved": int(tokens_saved),
+        "reduction_pct": round(reduction_pct, 1),
+        "savings_breakdown": {
+            "response_cache_hits_tokens": cache_avoided,
+            "prompt_cache_read_savings_tokens": int(cr * 0.9),
+            "context_trim_count": _stats["context_trims"],
+            "model_downgrade_count": _stats["model_downgrade_count"],
+        },
+    }
+
+
 @app.get("/proxy/stats")
 async def stats() -> JSONResponse:
     cache_stats = _cache.stats()
     return JSONResponse({
         "proxy": _stats,
+        "savings": _compute_savings(),
         "response_cache": cache_stats,
         "config": {
             "response_cache_enabled": config.response_cache_enabled,

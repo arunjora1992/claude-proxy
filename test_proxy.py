@@ -93,7 +93,7 @@ def test_trim_context_short():
 
 
 def test_trim_context_long():
-    cfg = make_cfg(context_max_turns=2)
+    cfg = make_cfg(context_max_turns=2, context_trim_enabled=True)
     # 3 pairs = 6 msgs, limit=2 pairs=4 msgs -> keeps first + last 4
     msgs = []
     for i in range(6):
@@ -155,6 +155,7 @@ def test_full_pipeline():
         sonnet_token_threshold=5000,
         context_max_turns=3,
         routing_enabled=True,
+        context_trim_enabled=True,
     )
     msgs = []
     for i in range(10):
