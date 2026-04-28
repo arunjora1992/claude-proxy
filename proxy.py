@@ -79,13 +79,16 @@ _stats = {
     "context_trims": 0,
     "upstream_calls": 0,
     # Token accounting for dashboard
-    "input_tokens_total": 0,       # tokens that actually hit the API
-    "input_tokens_cache_read": 0,  # tokens served from Anthropic prompt cache
+    "input_tokens_total": 0,
+    "input_tokens_cache_read": 0,
     "input_tokens_cache_written": 0,
     "output_tokens_total": 0,
-    # Cost tracking (USD) — Opus pricing as baseline
-    "cost_without_proxy_usd": 0.0,  # what it would have cost at full Opus price
-    "cost_with_proxy_usd": 0.0,     # what was actually charged
+    # Cost tracking (USD)
+    "cost_without_proxy_usd": 0.0,
+    "cost_with_proxy_usd": 0.0,
+    # Model tracking
+    "last_model_used": "—",
+    "models_seen": {},  # model -> request count
 }
 
 # Pricing per million tokens (input / output)
@@ -126,6 +129,8 @@ def _record_usage(usage: dict, model: str, original_model: str) -> None:
 
     _stats["cost_with_proxy_usd"]    += actual_cost
     _stats["cost_without_proxy_usd"] += baseline_cost
+    _stats["last_model_used"] = model
+    _stats["models_seen"][model] = _stats["models_seen"].get(model, 0) + 1
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -342,7 +347,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
          background: #0f172a; color: #e2e8f0; min-height: 100vh; padding: 24px; }
   h1 { font-size: 1.5rem; font-weight: 700; color: #f8fafc; margin-bottom: 4px; }
   .subtitle { color: #64748b; font-size: 0.85rem; margin-bottom: 28px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 28px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px; }
   .card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }
   .card .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: .05em; color: #64748b; margin-bottom: 8px; }
   .card .value { font-size: 2rem; font-weight: 700; color: #f8fafc; line-height: 1; }
@@ -351,6 +356,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .card.blue   .value { color: #60a5fa; }
   .card.yellow .value { color: #fbbf24; }
   .card.purple .value { color: #c084fc; }
+  .card.cyan   .value { color: #22d3ee; font-size: 1.1rem; word-break: break-all; }
   .section { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; margin-bottom: 16px; }
   .section h2 { font-size: 0.9rem; font-weight: 600; color: #94a3b8; margin-bottom: 16px; text-transform: uppercase; letter-spacing: .05em; }
   .bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
@@ -358,18 +364,50 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .bar-track { flex: 1; background: #0f172a; border-radius: 999px; height: 10px; overflow: hidden; }
   .bar-fill { height: 100%; border-radius: 999px; transition: width .6s ease; }
   .bar-val { width: 80px; text-align: right; font-size: 0.82rem; color: #94a3b8; flex-shrink: 0; }
-  .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .config-item { display: flex; justify-content: space-between; font-size: 0.82rem; padding: 6px 0; border-bottom: 1px solid #0f172a; }
-  .config-item .k { color: #94a3b8; }
   .on  { color: #4ade80; font-weight: 600; }
   .off { color: #f87171; font-weight: 600; }
   .refresh { font-size: 0.75rem; color: #475569; margin-top: 20px; text-align: center; }
+  /* Controls */
+  .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between;
+                padding: 10px 0; border-bottom: 1px solid #0f172a; }
+  .toggle-row .tlabel { font-size: 0.85rem; color: #cbd5e1; }
+  .toggle-row .tdesc { font-size: 0.72rem; color: #475569; margin-top: 2px; }
+  .switch { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: #374151; border-radius: 999px;
+            cursor: pointer; transition: background .2s; }
+  .slider:before { content:''; position: absolute; height: 18px; width: 18px;
+                   left: 3px; bottom: 3px; background: white; border-radius: 50%;
+                   transition: transform .2s; }
+  input:checked + .slider { background: #3b82f6; }
+  input:checked + .slider:before { transform: translateX(20px); }
+  select, input[type=text] {
+    background: #0f172a; border: 1px solid #334155; color: #e2e8f0;
+    border-radius: 6px; padding: 6px 10px; font-size: 0.82rem; width: 100%;
+    margin-top: 6px;
+  }
+  .field-row { margin-bottom: 12px; }
+  .field-row label { font-size: 0.78rem; color: #94a3b8; display: block; margin-bottom: 4px; }
+  .btn { background: #3b82f6; color: white; border: none; border-radius: 8px;
+         padding: 8px 20px; font-size: 0.85rem; cursor: pointer; margin-top: 8px; }
+  .btn:hover { background: #2563eb; }
+  .btn.danger { background: #ef4444; }
+  .btn.danger:hover { background: #dc2626; }
+  .toast { position: fixed; bottom: 24px; right: 24px; background: #22c55e;
+           color: white; padding: 10px 20px; border-radius: 8px; font-size: 0.85rem;
+           opacity: 0; transition: opacity .3s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  .model-tag { display: inline-block; background: #1e3a5f; color: #60a5fa;
+               border: 1px solid #1d4ed8; border-radius: 6px; padding: 2px 8px;
+               font-size: 0.75rem; margin: 2px; }
 </style>
 </head>
 <body>
 <h1>Claude Proxy Dashboard</h1>
 <p class="subtitle">Live token savings · auto-refreshes every 10 s</p>
 
+<!-- Top KPI cards -->
 <div class="grid">
   <div class="card green">
     <div class="label">Cost saved</div>
@@ -389,10 +427,18 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="card purple">
     <div class="label">Prompt cache saves</div>
     <div class="value" id="cache_read_tokens">—</div>
-    <div class="sub">tokens served from prompt cache</div>
+    <div class="sub">tokens from prompt cache</div>
   </div>
 </div>
 
+<!-- Current model -->
+<div class="card cyan" style="margin-bottom:16px">
+  <div class="label">Active model (last request)</div>
+  <div class="value" id="last_model">—</div>
+  <div class="sub" id="models_seen_row" style="margin-top:8px"></div>
+</div>
+
+<!-- Token breakdown -->
 <div class="section">
   <h2>Token breakdown</h2>
   <div class="bar-row">
@@ -417,6 +463,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Optimisation events -->
 <div class="section">
   <h2>Optimisation events</h2>
   <div class="bar-row">
@@ -436,87 +483,168 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Controls -->
 <div class="section">
-  <h2>Config</h2>
-  <div class="config-grid" id="config_grid">loading…</div>
+  <h2>Runtime controls</h2>
+  <div class="controls">
+    <div>
+      <div class="toggle-row">
+        <div><div class="tlabel">Response cache</div><div class="tdesc">100% savings on repeated requests</div></div>
+        <label class="switch"><input type="checkbox" id="t_rcache" onchange="toggle('response_cache_enabled',this.checked)"><span class="slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <div><div class="tlabel">Prompt caching</div><div class="tdesc">Auto cache_control — up to 90% savings</div></div>
+        <label class="switch"><input type="checkbox" id="t_pcache" onchange="toggle('prompt_cache_enabled',this.checked)"><span class="slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <div><div class="tlabel">Model routing</div><div class="tdesc">⚠ Disable for Claude Code</div></div>
+        <label class="switch"><input type="checkbox" id="t_route" onchange="toggle('routing_enabled',this.checked)"><span class="slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <div><div class="tlabel">Context trimming</div><div class="tdesc">⚠ Disable for Claude Code</div></div>
+        <label class="switch"><input type="checkbox" id="t_trim" onchange="toggle('context_trim_enabled',this.checked)"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div>
+      <div class="field-row">
+        <label>Haiku model</label>
+        <select id="sel_haiku" onchange="setField('haiku_model',this.value)">
+          <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <label>Sonnet model</label>
+        <select id="sel_sonnet" onchange="setField('sonnet_model',this.value)">
+          <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <label>Default (Opus) model</label>
+        <select id="sel_opus" onchange="setField('default_model',this.value)">
+          <option value="claude-opus-4-7">claude-opus-4-7</option>
+          <option value="claude-opus-4-6">claude-opus-4-6</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <label>Haiku threshold (tokens)</label>
+        <input type="text" id="inp_haiku_thresh" placeholder="2000"
+               onblur="setField('haiku_token_threshold',parseInt(this.value)||2000)">
+      </div>
+      <div class="field-row">
+        <label>Sonnet threshold (tokens)</label>
+        <input type="text" id="inp_sonnet_thresh" placeholder="8000"
+               onblur="setField('sonnet_token_threshold',parseInt(this.value)||8000)">
+      </div>
+      <button class="btn danger" onclick="clearCache()">Clear response cache</button>
+    </div>
+  </div>
 </div>
 
-<div class="refresh">Auto-refreshing every 10 seconds &nbsp;·&nbsp; <a href="/proxy/stats" style="color:#60a5fa">raw JSON</a></div>
+<div class="refresh">Auto-refreshing every 10 s &nbsp;·&nbsp; <a href="/proxy/stats" style="color:#60a5fa">raw JSON</a></div>
+<div class="toast" id="toast"></div>
 
 <script>
 function fmt(n) {
   if (n >= 1e6) return (n/1e6).toFixed(2)+'M';
   if (n >= 1e3) return (n/1e3).toFixed(1)+'K';
-  return String(n);
+  return String(n||0);
 }
-function pct(a, b) { return b > 0 ? Math.min(100, (a/b*100)).toFixed(1)+'%' : '0%'; }
 function bar(id, val, max) {
   const el = document.getElementById(id);
   if (el) el.style.width = (max > 0 ? Math.min(100, val/max*100) : 0) + '%';
 }
+function showToast(msg, ok=true) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.background = ok ? '#22c55e' : '#ef4444';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+async function toggle(key, val) {
+  try {
+    await fetch('/proxy/config', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({[key]:val})});
+    showToast(key + ' → ' + (val ? 'ON' : 'OFF'));
+  } catch(e) { showToast('Error: '+e, false); }
+}
+async function setField(key, val) {
+  try {
+    await fetch('/proxy/config', {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({[key]:val})});
+    showToast(key + ' updated');
+  } catch(e) { showToast('Error: '+e, false); }
+}
+async function clearCache() {
+  await fetch('/proxy/cache/clear', {method:'POST'});
+  showToast('Cache cleared');
+}
+
+let _cfg = {};
 
 async function refresh() {
   try {
     const r = await fetch('/proxy/stats');
     const d = await r.json();
     const p = d.proxy, c = d.response_cache, cfg = d.config;
+    _cfg = cfg;
 
     // Cost
-    const saved = p.cost_without_proxy_usd - p.cost_with_proxy_usd;
+    const saved = (p.cost_without_proxy_usd||0) - (p.cost_with_proxy_usd||0);
     const savedPct = p.cost_without_proxy_usd > 0
       ? (saved / p.cost_without_proxy_usd * 100).toFixed(1) + '%' : '0%';
     document.getElementById('saved_pct').textContent = savedPct;
     document.getElementById('saved_usd').textContent =
-      '$' + saved.toFixed(4) + ' saved of $' + p.cost_without_proxy_usd.toFixed(4);
+      '$' + saved.toFixed(4) + ' saved of $' + (p.cost_without_proxy_usd||0).toFixed(4);
 
     // Cache
     const hr = c.hit_rate != null ? (c.hit_rate*100).toFixed(1)+'%' : '0%';
     document.getElementById('hit_rate').textContent = hr;
-    document.getElementById('hits_of').textContent = c.hits + ' hits of ' + (c.hits+c.misses) + ' requests';
+    document.getElementById('hits_of').textContent = (c.hits||0) + ' hits of ' + ((c.hits||0)+(c.misses||0)) + ' requests';
 
     // Totals
     document.getElementById('req_total').textContent = fmt(p.requests_total);
     document.getElementById('upstream_calls').textContent = fmt(p.upstream_calls) + ' upstream calls';
     document.getElementById('cache_read_tokens').textContent = fmt(p.input_tokens_cache_read || 0);
 
-    // Bars — token breakdown
+    // Model
+    document.getElementById('last_model').textContent = p.last_model_used || '—';
+    const seen = p.models_seen || {};
+    document.getElementById('models_seen_row').innerHTML =
+      Object.entries(seen).map(([m,n]) => `<span class="model-tag">${m}: ${n}</span>`).join('') || 'No requests yet';
+
+    // Token bars
     const baseline = (p.input_tokens_total||0) + (p.input_tokens_cache_read||0) + (p.input_tokens_cache_written||0);
     const maxTok = Math.max(baseline, p.output_tokens_total||0, 1);
-    bar('b_without', baseline, maxTok);
-    document.getElementById('v_without').textContent = fmt(baseline);
-    bar('b_actual', p.input_tokens_total||0, maxTok);
-    document.getElementById('v_actual').textContent = fmt(p.input_tokens_total||0);
-    bar('b_cr', p.input_tokens_cache_read||0, maxTok);
-    document.getElementById('v_cr').textContent = fmt(p.input_tokens_cache_read||0);
-    bar('b_out', p.output_tokens_total||0, maxTok);
-    document.getElementById('v_out').textContent = fmt(p.output_tokens_total||0);
+    bar('b_without', baseline, maxTok); document.getElementById('v_without').textContent = fmt(baseline);
+    bar('b_actual', p.input_tokens_total||0, maxTok); document.getElementById('v_actual').textContent = fmt(p.input_tokens_total||0);
+    bar('b_cr', p.input_tokens_cache_read||0, maxTok); document.getElementById('v_cr').textContent = fmt(p.input_tokens_cache_read||0);
+    bar('b_out', p.output_tokens_total||0, maxTok); document.getElementById('v_out').textContent = fmt(p.output_tokens_total||0);
 
-    // Events bars
+    // Event bars
     const maxEv = Math.max(p.cache_hits||0, p.model_downgrade_count||0, p.context_trims||0, 1);
-    bar('b_chits', p.cache_hits||0, maxEv);
-    document.getElementById('v_chits').textContent = fmt(p.cache_hits||0);
-    bar('b_route', p.model_downgrade_count||0, maxEv);
-    document.getElementById('v_route').textContent = fmt(p.model_downgrade_count||0);
-    bar('b_trim', p.context_trims||0, maxEv);
-    document.getElementById('v_trim').textContent = fmt(p.context_trims||0);
+    bar('b_chits', p.cache_hits||0, maxEv); document.getElementById('v_chits').textContent = fmt(p.cache_hits||0);
+    bar('b_route', p.model_downgrade_count||0, maxEv); document.getElementById('v_route').textContent = fmt(p.model_downgrade_count||0);
+    bar('b_trim', p.context_trims||0, maxEv); document.getElementById('v_trim').textContent = fmt(p.context_trims||0);
 
-    // Config
-    const cfgItems = [
-      ['Response cache', cfg.response_cache_enabled],
-      ['Prompt cache',   cfg.prompt_cache_enabled],
-      ['Model routing',  cfg.routing_enabled],
-      ['Context trim',   cfg.context_trim_enabled],
-      ['Batch queue',    cfg.batch_enabled],
-      ['Haiku threshold', cfg.haiku_threshold_tokens+'t'],
-      ['Sonnet threshold', cfg.sonnet_threshold_tokens+'t'],
-      ['Max turns', cfg.context_max_turns],
-    ];
-    document.getElementById('config_grid').innerHTML = cfgItems.map(([k,v]) =>
-      '<div class="config-item"><span class="k">'+k+'</span>'
-      +'<span class="'+(v===true?'on':v===false?'off':'')+'">'
-      +(v===true?'ON':v===false?'OFF':v)+'</span></div>'
-    ).join('');
+    // Sync toggles (only if user is not hovering)
+    document.getElementById('t_rcache').checked = cfg.response_cache_enabled;
+    document.getElementById('t_pcache').checked = cfg.prompt_cache_enabled;
+    document.getElementById('t_route').checked  = cfg.routing_enabled;
+    document.getElementById('t_trim').checked   = cfg.context_trim_enabled;
+
+    // Sync selects
+    setSelVal('sel_haiku',  cfg.haiku_model);
+    setSelVal('sel_sonnet', cfg.sonnet_model);
+    setSelVal('sel_opus',   cfg.default_model);
+    document.getElementById('inp_haiku_thresh').placeholder  = cfg.haiku_threshold_tokens;
+    document.getElementById('inp_sonnet_thresh').placeholder = cfg.sonnet_threshold_tokens;
   } catch(e) { console.error(e); }
+}
+
+function setSelVal(id, val) {
+  const s = document.getElementById(id);
+  let found = false;
+  for (const o of s.options) { if (o.value === val) { o.selected = true; found = true; } }
+  if (!found) { const o = new Option(val, val, true, true); s.add(o); }
 }
 
 refresh();
@@ -548,8 +676,35 @@ async def stats() -> JSONResponse:
             "haiku_threshold_tokens": config.haiku_token_threshold,
             "sonnet_threshold_tokens": config.sonnet_token_threshold,
             "context_max_turns": config.context_max_turns,
+            "default_model": config.default_model,
+            "haiku_model": config.haiku_model,
+            "sonnet_model": config.sonnet_model,
         },
     })
+
+
+@app.patch("/proxy/config")
+async def update_config(request: Request) -> JSONResponse:
+    """Runtime config toggle — changes take effect immediately without restart."""
+    body = await request.json()
+    allowed = {
+        "routing_enabled": bool,
+        "context_trim_enabled": bool,
+        "prompt_cache_enabled": bool,
+        "response_cache_enabled": bool,
+        "haiku_token_threshold": int,
+        "sonnet_token_threshold": int,
+        "context_max_turns": int,
+        "default_model": str,
+        "haiku_model": str,
+        "sonnet_model": str,
+    }
+    updated = {}
+    for key, typ in allowed.items():
+        if key in body:
+            setattr(config, key, typ(body[key]))
+            updated[key] = getattr(config, key)
+    return JSONResponse({"updated": updated})
 
 
 @app.post("/proxy/cache/clear")
