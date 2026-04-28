@@ -1,0 +1,23 @@
+services:
+  claude-proxy:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    environment:
+      PROXY_PORT: "8082"
+      CLAUDE_CODE_MODE: "true"
+      CACHE_ENABLED: "${CACHE_ENABLED:-true}"
+      CACHE_MAXSIZE: "${CACHE_MAXSIZE:-1000}"
+      CACHE_TTL: "${CACHE_TTL:-3600}"
+      PROMPT_CACHE_ENABLED: "${PROMPT_CACHE_ENABLED:-true}"
+      PROMPT_CACHE_MIN_TOKENS: "${PROMPT_CACHE_MIN_TOKENS:-1024}"
+      ROUTING_ENABLED: "${ROUTING_ENABLED:-false}"
+      CONTEXT_TRIM_ENABLED: "${CONTEXT_TRIM_ENABLED:-false}"
+      BATCH_ENABLED: "${BATCH_ENABLED:-false}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8082/proxy/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
