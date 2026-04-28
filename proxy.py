@@ -135,24 +135,6 @@ def _record_usage(usage: dict, model: str, original_model: str) -> None:
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _response_to_dict(msg: anthropic.types.Message) -> dict:
-    return {
-        "id": msg.id,
-        "type": "message",
-        "role": "assistant",
-        "content": [b.model_dump() for b in msg.content],
-        "model": msg.model,
-        "stop_reason": msg.stop_reason,
-        "stop_sequence": msg.stop_sequence,
-        "usage": {
-            "input_tokens": msg.usage.input_tokens,
-            "output_tokens": msg.usage.output_tokens,
-            "cache_creation_input_tokens": getattr(msg.usage, "cache_creation_input_tokens", 0) or 0,
-            "cache_read_input_tokens": getattr(msg.usage, "cache_read_input_tokens", 0) or 0,
-        },
-    }
-
-
 def _strip_internal_fields(req: dict) -> dict:
     """Remove proxy-internal tracking fields before forwarding."""
     return {k: v for k, v in req.items() if not k.startswith("_")}
@@ -190,27 +172,49 @@ async def messages(request: Request) -> Response:
 
     api_key = _get_api_key(request)
 
+    # Pass through beta headers and other anthropic-specific headers from the caller
+    passthrough = {
+        k: v for k, v in request.headers.items()
+        if k.lower() in ("anthropic-beta", "anthropic-version", "user-agent")
+    }
+
     # 5. Streaming path — forward raw bytes so Claude Code sees exact SSE wire format
     if is_streaming:
-        # Pass through beta headers and other anthropic-specific headers from the caller
-        passthrough = {
-            k: v for k, v in request.headers.items()
-            if k.lower() in ("anthropic-beta", "anthropic-version", "user-agent")
-        }
         return StreamingResponse(
             _stream_upstream(forward, api_key, passthrough),
             media_type="text/event-stream",
         )
 
-    # 6. Non-streaming upstream call
+    # 6. Non-streaming upstream call — raw httpx so unknown params pass through
+    # (the Anthropic SDK rejects kwargs it doesn't know, e.g. `context_management`)
     _stats["upstream_calls"] += 1
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        **passthrough,
+    }
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(**forward)
-    except anthropic.APIError as e:
-        raise HTTPException(status_code=e.status_code if hasattr(e, "status_code") else 500, detail=str(e))
+        async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as http:
+            resp = await http.post(
+                "https://api.anthropic.com/v1/messages",
+                json=forward,
+                headers=headers,
+            )
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Upstream connection error: {e}")
 
-    result = _response_to_dict(msg)
+    if resp.status_code >= 400:
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "application/json"),
+        )
+
+    result = resp.json()
+    usage = result.setdefault("usage", {})
+    usage.setdefault("cache_creation_input_tokens", 0)
+    usage.setdefault("cache_read_input_tokens", 0)
 
     # Annotate routing info for transparency
     if optimized.get("_routed_from"):
